@@ -145,7 +145,7 @@ void mainloop(cwiid_wiimote_t *wiimote, unsigned ms_sample, unsigned ms_long,
         bool long_is_moving, is_moving, warned, recorded_last;
         float dist, max_dist;
         unsigned max_dotsize;
-        time_t time_sec, last_move;
+        time_t time_sec, last_move_time, override_time;
         struct tm time_fmt;
 
         recorded_last = false;
@@ -160,7 +160,8 @@ void mainloop(cwiid_wiimote_t *wiimote, unsigned ms_sample, unsigned ms_long,
         max_dotsize = 0;
         dist = 0.0;
         max_dist = 0.0;
-        last_move = time(NULL);
+        last_move_time = time(NULL);
+        override_time = 0;
 
         while (1) {
                 is_moving = false;
@@ -216,19 +217,31 @@ void mainloop(cwiid_wiimote_t *wiimote, unsigned ms_sample, unsigned ms_long,
                 time_sec = time(NULL);
                 localtime_r(&time_sec, &time_fmt);
 
-                if (is_moving && long_is_moving) {
-                        last_move = time_sec;
+                if (mydata.buttons & CWIID_BTN_A) {
+                        mydata.buttons = 0;
+                        override_time = time_sec;
+                }
+
+                if ((is_moving && long_is_moving) || time_sec - override_time < override_sec) {
+                        last_move_time = time_sec;
                         warned = false;
                 }
 
-                if (!warned && time_sec - last_move > warn_sec) {
+                if (!warned && time_sec - last_move_time > warn_sec) {
                         warned = true;
                         mutex_unlock(&mtx);
                         system("aplay --quiet warn.wav");
                         mutex_lock(&mtx);
                 }
 
+                if (time_sec - last_move_time > err_sec) {
+                        mutex_unlock(&mtx);
+                        system("aplay --quiet warn.wav");
+                        mutex_lock(&mtx);
+                }
+
 #define NOTHING "                 "
+#define OVERRID "override         "
 #define WARNING "warning          "
 #define ERROR   "get back to work!"
                 if (calibrate) {
@@ -249,7 +262,10 @@ void mainloop(cwiid_wiimote_t *wiimote, unsigned ms_sample, unsigned ms_long,
                         printf("\r[%02u:%02u] %3d%% %u %s",
                                time_fmt.tm_hour, time_fmt.tm_min,
                                (int) (100.0 * mydata.battery / CWIID_BATTERY_MAX),
-                               mydata.num_src, (warned ? ERROR : NOTHING));
+                               mydata.num_src,
+                               (time_sec - override_time < override_sec ? OVERRID :
+                                (time_sec - last_move_time > err_sec ? ERROR :
+                                 (warned ? WARNING : NOTHING))));
                 }
                 fflush(stdout);
                 mutex_unlock(&mtx);

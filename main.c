@@ -100,7 +100,9 @@ void cwiid_ir(cwiid_wiimote_t *wiimote, struct cwiid_ir_mesg *mesg)
                 ptr = lowest_dist(src, mydata.pos);
         }
 
-        mydata.num_src = num_src;
+        if (!mydata.recorded) {
+                mydata.num_src = num_src;
+        }
 
         if (ptr) {
                 memcpy(mydata.pos, ptr->pos, sizeof(mydata.pos));
@@ -139,7 +141,6 @@ void mainloop(cwiid_wiimote_t *wiimote, unsigned ms_sample, unsigned ms_long, fl
         unsigned long_size, long_count;
         bool long_is_moving, is_moving, warned;
         float dist;
-        char status;
         time_t time_sec, last_move;
         struct tm time_fmt;
 
@@ -149,10 +150,10 @@ void mainloop(cwiid_wiimote_t *wiimote, unsigned ms_sample, unsigned ms_long, fl
         avg_pos_long[1] = 0;
         last_pos_long[0] = 0;
         last_pos_long[1] = 0;
-        long_is_moving = false;
-        warned = false;
         long_size = ms_long / ms_sample;
         long_count = 0;
+        long_is_moving = false;
+        warned = false;
         last_move = time(NULL);
 
         while (1) {
@@ -215,21 +216,13 @@ void mainloop(cwiid_wiimote_t *wiimote, unsigned ms_sample, unsigned ms_long, fl
                         mutex_lock(&mtx);
                 }
 
-                if (mydata.num_src == 0) {
-                        status = '0';
-                } else if (mydata.num_src == 1) {
-                        status = '1';
-                } else {
-                        status = '?';
-                }
-
 #define NOTHING "                 "
 #define WARNING "warning          "
 #define ERROR   "get back to work!"
-                printf("\r[%2u:%2u] %3d%% %c %c %s",
+                printf("\r[%2u:%2u] %3d%% %u %c %s",
                        time_fmt.tm_hour, time_fmt.tm_min,
                        (int) (100.0 * mydata.battery / CWIID_BATTERY_MAX),
-                       status, (is_moving && long_is_moving ? 'M' : ' '),
+                       mydata.num_src, (is_moving && long_is_moving ? 'M' : ' '),
                        (warned ? ERROR : NOTHING));
                 fflush(stdout);
                 mutex_unlock(&mtx);

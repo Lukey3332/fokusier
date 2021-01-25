@@ -5,6 +5,7 @@
 #include <math.h>
 #include <limits.h>
 #include <time.h>
+#include <stdbool.h>
 
 #include <bluetooth/bluetooth.h>
 #include "cwiid.h"
@@ -13,9 +14,8 @@ static struct {
         unsigned num_src;
         uint8_t battery;
         uint16_t buttons;
-        uint16_t last_pos[2];
-        unsigned count;
-        unsigned acc_pos[2];
+        bool recorded;
+        uint16_t pos[2];
 } mydata;
 
 static pthread_mutex_t mtx = PTHREAD_MUTEX_INITIALIZER;
@@ -82,7 +82,7 @@ struct cwiid_ir_src *lowest_dist(struct cwiid_ir_src *src, uint16_t *last_pos)
         return ptr;
 }
 
-void cwiid_ir(struct cwiid_ir_mesg *mesg)
+void cwiid_ir(cwiid_wiimote_t *wiimote, struct cwiid_ir_mesg *mesg)
 {
         unsigned n, num_src;
         struct cwiid_ir_src *src = mesg->src;
@@ -97,17 +97,15 @@ void cwiid_ir(struct cwiid_ir_mesg *mesg)
         }
 
         if (num_src > 1) {
-                ptr = lowest_dist(src, mydata.last_pos);
+                ptr = lowest_dist(src, mydata.pos);
         }
 
         mydata.num_src = num_src;
 
         if (ptr) {
-                mydata.acc_pos[CWIID_X] += ptr->pos[CWIID_X];
-                mydata.acc_pos[CWIID_Y] += ptr->pos[CWIID_Y];
-                mydata.count++;
-
-                memcpy(mydata.last_pos, ptr->pos, sizeof(mydata.last_pos));
+                memcpy(mydata.pos, ptr->pos, sizeof(mydata.pos));
+                mydata.recorded = true;
+                cwiid_set_rpt_mode(wiimote, CWIID_RPT_STATUS | CWIID_RPT_BTN);
         }
 }
 
@@ -124,7 +122,7 @@ void cwiid_callback(cwiid_wiimote_t *wiimote, int mesg_count,
                                 mydata.battery = mesg_array[n].status_mesg.battery;
                                 break;
                         case CWIID_MESG_IR:
-                                cwiid_ir(&mesg_array[n].ir_mesg);
+                                cwiid_ir(wiimote, &mesg_array[n].ir_mesg);
                                 break;
                         case CWIID_MESG_BTN:
                                 mydata.buttons |= mesg_array[n].btn_mesg.buttons;
@@ -136,9 +134,10 @@ void cwiid_callback(cwiid_wiimote_t *wiimote, int mesg_count,
 
 void mainloop(cwiid_wiimote_t *wiimote, unsigned ms_sample, unsigned ms_long, float tresh_short, float tresh_long, unsigned warn_sec, unsigned err_sec)
 {
-        unsigned avg_pos_short[2], last_pos_short[2], avg_pos_long[2], last_pos_long[2];
+        uint16_t last_pos_short[2];
+        unsigned avg_pos_long[2], last_pos_long[2];
         unsigned long_size, long_count;
-        unsigned long_is_moving, is_moving, warned;
+        bool long_is_moving, is_moving, warned;
         float dist;
         char status;
         time_t time_sec, last_move;
@@ -150,55 +149,49 @@ void mainloop(cwiid_wiimote_t *wiimote, unsigned ms_sample, unsigned ms_long, fl
         avg_pos_long[1] = 0;
         last_pos_long[0] = 0;
         last_pos_long[1] = 0;
-        long_is_moving = 0;
-        warned = 0;
+        long_is_moving = false;
+        warned = false;
         long_size = ms_long / ms_sample;
         long_count = 0;
         last_move = time(NULL);
 
         while (1) {
-                is_moving = 0;
+                is_moving = false;
 
-                cwiid_set_rpt_mode(wiimote, CWIID_RPT_STATUS | CWIID_RPT_BTN);
-                usleep(ms_sample*1000/2);
                 cwiid_set_rpt_mode(wiimote, CWIID_RPT_STATUS | CWIID_RPT_BTN | CWIID_RPT_IR);
-                usleep(ms_sample*1000/2);
+                usleep(ms_sample*1000);
                 mutex_lock(&mtx);
 
-                if (mydata.count) {
-                        avg_pos_short[CWIID_X] = mydata.acc_pos[CWIID_X] / mydata.count;
-                        avg_pos_short[CWIID_Y] = mydata.acc_pos[CWIID_Y] / mydata.count;
-                        mydata.count = 0;
-                        mydata.acc_pos[0] = 0;
-                        mydata.acc_pos[1] = 0;
+                if (mydata.recorded) {
+                        mydata.recorded = false;
 
-                        dist = distance(avg_pos_short, last_pos_short);
+                        dist = distance_u16(mydata.pos, last_pos_short);
                         if (dist > tresh_short) {
-                                is_moving = 1;
+                                is_moving = true;
                         }
 
                         if (!long_is_moving && dist > tresh_long) {
-                                is_moving = 0;
-                                long_is_moving = 1;
+                                is_moving = false;
+                                long_is_moving = true;
                                 avg_pos_long[CWIID_X] = 0;
                                 avg_pos_long[CWIID_Y] = 0;
                                 long_count = 0;
                         }
 
-                        avg_pos_long[CWIID_X] += avg_pos_short[CWIID_X];
-                        avg_pos_long[CWIID_Y] += avg_pos_short[CWIID_Y];
+                        avg_pos_long[CWIID_X] += mydata.pos[CWIID_X];
+                        avg_pos_long[CWIID_Y] += mydata.pos[CWIID_Y];
                         long_count++;
 
-                        memcpy(last_pos_short, avg_pos_short, sizeof(last_pos_short));
+                        memcpy(last_pos_short, mydata.pos, sizeof(last_pos_short));
                 }
 
                 if (long_count >= long_size) {
                         avg_pos_long[CWIID_X] /= long_count;
                         avg_pos_long[CWIID_Y] /= long_count;
                         if (distance(avg_pos_long, last_pos_long) > tresh_long) {
-                                long_is_moving = 1;
+                                long_is_moving = true;
                         } else {
-                                long_is_moving = 0;
+                                long_is_moving = false;
                         }
                         memcpy(last_pos_long, avg_pos_long, sizeof(last_pos_long));
 
@@ -212,11 +205,11 @@ void mainloop(cwiid_wiimote_t *wiimote, unsigned ms_sample, unsigned ms_long, fl
 
                 if (is_moving && long_is_moving) {
                         last_move = time_sec;
-                        warned = 0;
+                        warned = false;
                 }
 
                 if (!warned && time_sec - last_move > warn_sec) {
-                        warned = 1;
+                        warned = true;
                         mutex_unlock(&mtx);
                         system("aplay --quiet warn.wav");
                         mutex_lock(&mtx);
@@ -248,9 +241,7 @@ int main (int argc, char **argv)
         bdaddr_t *bdaddr = BDADDR_ANY;
         cwiid_wiimote_t *wiimote = NULL;
 
-        mydata.count = 0;
-        mydata.acc_pos[0] = 0;
-        mydata.acc_pos[1] = 0;
+        mydata.recorded = false;
 
         puts("Put Wiimote in discoverable mode (press 1+2) and press enter");
         getc(stdin);

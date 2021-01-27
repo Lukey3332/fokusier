@@ -142,7 +142,7 @@ void mainloop(cwiid_wiimote_t *wiimote, unsigned ms_sample, unsigned ms_long,
         uint16_t last_pos_short[2];
         unsigned avg_pos_long[2], last_pos_long[2];
         unsigned long_size, long_count;
-        bool long_is_moving, is_moving, warned, recorded_last;
+        bool long_is_moving, is_moving, warned, recorded_last, override;
         float dist, max_dist;
         unsigned max_dotsize;
         time_t time_sec, last_move_time, override_time;
@@ -161,17 +161,25 @@ void mainloop(cwiid_wiimote_t *wiimote, unsigned ms_sample, unsigned ms_long,
         dist = 0.0;
         max_dist = 0.0;
         last_move_time = time(NULL);
+        override = false;
         override_time = 0;
 
         while (1) {
+                time_sec = time(NULL);
+                localtime_r(&time_sec, &time_fmt);
                 is_moving = false;
+                override = time_sec - override_time < override_sec;
 
-                // 20ms timeout to detect something, preserve battery
-                cwiid_set_rpt_mode(wiimote, CWIID_RPT_STATUS | CWIID_RPT_BTN | CWIID_RPT_IR);
-                usleep(20*1000);
-                cwiid_set_rpt_mode(wiimote, CWIID_RPT_STATUS | CWIID_RPT_BTN);
-                usleep((ms_sample-20)*1000);
-                mutex_lock(&mtx);
+                if (override) {
+                        sleep(1);
+                } else {
+                        // 20ms timeout to detect something, preserve battery
+                        cwiid_set_rpt_mode(wiimote, CWIID_RPT_STATUS | CWIID_RPT_BTN | CWIID_RPT_IR);
+                        usleep(20*1000);
+                        cwiid_set_rpt_mode(wiimote, CWIID_RPT_STATUS | CWIID_RPT_BTN);
+                        usleep((ms_sample-20)*1000);
+                        mutex_lock(&mtx);
+                }
 
                 if (mydata.recorded) {
                         mydata.recorded = false;
@@ -214,15 +222,12 @@ void mainloop(cwiid_wiimote_t *wiimote, unsigned ms_sample, unsigned ms_long,
                         long_count = 0;
                 }
 
-                time_sec = time(NULL);
-                localtime_r(&time_sec, &time_fmt);
-
                 if (mydata.buttons & CWIID_BTN_A) {
                         mydata.buttons = 0;
                         override_time = time_sec;
                 }
 
-                if ((is_moving && long_is_moving) || time_sec - override_time < override_sec) {
+                if ((is_moving && long_is_moving) || override) {
                         last_move_time = time_sec;
                         warned = false;
                 }
@@ -240,10 +245,6 @@ void mainloop(cwiid_wiimote_t *wiimote, unsigned ms_sample, unsigned ms_long,
                         mutex_lock(&mtx);
                 }
 
-#define NOTHING "                 "
-#define OVERRID "override         "
-#define WARNING "warning          "
-#define ERROR   "get back to work!"
                 if (calibrate) {
                         if (dist > max_dist) {
                                 max_dist = dist;
@@ -259,11 +260,15 @@ void mainloop(cwiid_wiimote_t *wiimote, unsigned ms_sample, unsigned ms_long,
                                dist, max_dist,
                                mydata.src.size, max_dotsize);
                 } else {
+#define NOTHING "                 "
+#define OVERRID "override         "
+#define WARNING "warning          "
+#define ERROR   "get back to work!"
                         printf("\r[%02u:%02u] %3d%% %u %s",
                                time_fmt.tm_hour, time_fmt.tm_min,
                                (int) (100.0 * mydata.battery / CWIID_BATTERY_MAX),
                                mydata.num_src,
-                               (time_sec - override_time < override_sec ? OVERRID :
+                               (override ? OVERRID :
                                 (time_sec - last_move_time > err_sec ? ERROR :
                                  (warned ? WARNING : NOTHING))));
                 }
@@ -288,7 +293,7 @@ int main (int argc, char **argv)
                 puts("Error setting callback");
                 exit(1);
         }
-        cwiid_set_rpt_mode(wiimote, CWIID_RPT_STATUS | CWIID_RPT_BTN | CWIID_RPT_IR);
+        cwiid_set_rpt_mode(wiimote, CWIID_RPT_STATUS | CWIID_RPT_BTN);
 
         mainloop(wiimote, 100, 2*1000, 5, 30, 60, 120, 300, false);
 }
